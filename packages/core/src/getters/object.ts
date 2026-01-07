@@ -8,7 +8,7 @@ import {
   type ScalarValue,
   SchemaType,
 } from '../types';
-import { isBoolean, isReference, jsDoc, pascal } from '../utils';
+import { escape, isBoolean, isReference, jsDoc, pascal } from '../utils';
 import { combineSchemas } from './combine';
 import { getAliasedImports, getImportAliasForRefOrValue } from './imports';
 import { getKey } from './keys';
@@ -167,19 +167,55 @@ export function getObject({
 
         acc.hasReadonlyProps ||= isReadOnly || false;
 
-        const aliasedImports = getAliasedImports({
-          name,
-          context,
-          resolvedValue,
-        });
+        const constValue =
+          'const' in schema
+            ? (schema as OpenApiSchemaObject | OpenApiReferenceObject).const
+            : undefined;
+        const hasConst = constValue !== undefined;
+        const constLiteral =
+          constValue === undefined
+            ? undefined
+            : typeof constValue === 'string'
+              ? `'${escape(constValue)}'`
+              : JSON.stringify(constValue);
 
-        acc.imports.push(...aliasedImports);
+        const needsValueImport =
+          hasConst && (resolvedValue.isEnum || resolvedValue.type === 'enum');
 
-        const propValue = getImportAliasForRefOrValue({
-          context,
-          resolvedValue,
-          imports: aliasedImports,
-        });
+        const aliasedImports: GeneratorImport[] = [];
+        if (needsValueImport) {
+          aliasedImports.push(
+            ...resolvedValue.imports.map((imp) => ({
+              ...imp,
+              isConstant: true,
+            })),
+          );
+        } else if (!hasConst) {
+          aliasedImports.push(
+            ...getAliasedImports({
+              name,
+              context,
+              resolvedValue,
+            }),
+          );
+        }
+
+        if (aliasedImports.length > 0) {
+          acc.imports.push(...aliasedImports);
+        }
+
+        const propValue = needsValueImport
+          ? getImportAliasForRefOrValue({
+              context,
+              resolvedValue,
+              imports: aliasedImports,
+            })
+          : (constLiteral ??
+            getImportAliasForRefOrValue({
+              context,
+              resolvedValue,
+              imports: aliasedImports,
+            }));
 
         acc.value += `\n  ${doc ? `${doc}  ` : ''}${
           isReadOnly && !context.output.override.suppressReadonlyModifier
