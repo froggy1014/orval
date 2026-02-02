@@ -12,6 +12,7 @@ import {
   type NormalizedInputOptions,
   type NormalizedOutputOptions,
   type OpenApiPathItemObject,
+  OutputClient,
   resolveRef,
 } from '@orval/core';
 import { generateMockImports } from '@orval/mock';
@@ -25,6 +26,13 @@ import {
   generateOperations,
 } from './client';
 
+const shouldKeyVerbOptionsByOperationName = (
+  output: NormalizedOutputOptions,
+) =>
+  output.client === OutputClient.AXIOS ||
+  output.client === OutputClient.AXIOS_FUNCTIONS ||
+  output.client === OutputClient.FETCH;
+
 export async function getApiBuilder({
   input,
   output,
@@ -34,6 +42,8 @@ export async function getApiBuilder({
   output: NormalizedOutputOptions;
   context: ContextSpec;
 }): Promise<GeneratorApiBuilder> {
+  const keyVerbOptionsByOperationName =
+    shouldKeyVerbOptionsByOperationName(output);
   const api = await asyncReduce(
     Object.entries(context.spec.paths ?? {}),
     async (acc, [pathRoute, verbs]) => {
@@ -114,7 +124,11 @@ export async function getApiBuilder({
       );
 
       for (const verbOption of verbsOptions) {
-        acc.verbOptions[verbOption.operationId] = verbOption;
+        const verbOptionsKey = keyVerbOptionsByOperationName
+          ? verbOption.operationName
+          : verbOption.operationId;
+
+        acc.verbOptions[verbOptionsKey] = verbOption;
       }
       acc.schemas.push(...schemas);
       acc.operations = { ...acc.operations, ...pathOperations };

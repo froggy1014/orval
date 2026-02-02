@@ -13,6 +13,7 @@ interface GetResponseOptions {
   operationName: string;
   context: ContextSpec;
   contentType?: OverrideOutputContentType;
+  preferredContentType?: string;
 }
 
 export function getResponse({
@@ -20,6 +21,7 @@ export function getResponse({
   operationName,
   context,
   contentType,
+  preferredContentType,
 }: GetResponseOptions): GetterResponse {
   if (!responses) {
     return {
@@ -43,17 +45,26 @@ export function getResponse({
     (type) => `${type.key}-${type.value}`,
   );
 
-  const filteredTypes = contentType
+  let effectiveContentType = contentType;
+
+  if (
+    preferredContentType &&
+    types.some((type) => type.contentType === preferredContentType)
+  ) {
+    effectiveContentType = { include: [preferredContentType] };
+  }
+
+  const filteredTypes = effectiveContentType
     ? types.filter((type) => {
         let include = true;
         let exclude = false;
 
-        if (contentType.include) {
-          include = contentType.include.includes(type.contentType);
+        if (effectiveContentType.include) {
+          include = effectiveContentType.include.includes(type.contentType);
         }
 
-        if (contentType.exclude) {
-          exclude = contentType.exclude.includes(type.contentType);
+        if (effectiveContentType.exclude) {
+          exclude = effectiveContentType.exclude.includes(type.contentType);
         }
 
         return include && !exclude;

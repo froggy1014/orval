@@ -27,6 +27,8 @@ export function getBody({
     [[context.output.override.components.requestBodies.suffix, requestBody]],
     operationName,
     context,
+    'unknown',
+    (type) => `${type.contentType}:${type.value}`,
   );
 
   const filteredBodyTypes = contentType

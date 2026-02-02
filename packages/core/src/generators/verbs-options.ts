@@ -6,6 +6,7 @@ import {
   getProps,
   getQueryParams,
   getResponse,
+  getResReqTypes,
 } from '../getters';
 import type {
   ContextSpec,
@@ -15,6 +16,7 @@ import type {
   NormalizedMutator,
   NormalizedOperationOptions,
   NormalizedOutputOptions,
+  OutputClient,
   OpenApiComponentsObject,
   OpenApiOperationObject,
   OpenApiPathItemObject,
@@ -29,9 +31,32 @@ import {
   isVerb,
   jsDoc,
   mergeDeep,
+  pascal,
   sanitize,
 } from '../utils';
 import { generateMutator } from './mutator';
+
+const normalizeTags = (tags: unknown): string[] => {
+  if (!Array.isArray(tags)) {
+    return [];
+  }
+
+  const result: string[] = [];
+  for (const tag of tags) {
+    if (typeof tag === 'string') {
+      result.push(tag);
+    }
+  }
+
+  return result;
+};
+
+const shouldSplitRequestBodyByContentType = (
+  output: NormalizedOutputOptions,
+) =>
+  output.client === OutputClient.AXIOS ||
+  output.client === OutputClient.AXIOS_FUNCTIONS ||
+  output.client === OutputClient.FETCH;
 
 export interface GenerateVerbOptionsParams {
   verb: Verbs;
@@ -42,6 +67,7 @@ export interface GenerateVerbOptionsParams {
   verbParameters?: OpenApiPathItemObject['parameters'];
   components?: OpenApiComponentsObject;
   context: ContextSpec;
+  bodyContentType?: string;
 }
 
 export async function generateVerbOptions({
@@ -52,49 +78,65 @@ export async function generateVerbOptions({
   pathRoute,
   verbParameters = [],
   context,
+  bodyContentType,
 }: GenerateVerbOptionsParams): Promise<GeneratorVerbOptions> {
   const {
     responses,
     requestBody,
     parameters: operationParameters,
-    tags = [],
+    tags: rawTags = [],
     deprecated,
     description,
     summary,
   } = operation;
+  const tags = normalizeTags(rawTags);
   const operationId = getOperationId(operation, route, verb);
   const overrideOperation = output.override.operations[operationId];
-  const overrideTag = Object.entries(
-    output.override.tags,
-  ).reduce<NormalizedOperationOptions>(
-    (acc, [tag, options]) =>
-      tags.includes(tag) && options ? mergeDeep(acc, options) : acc,
-    {},
-  );
+  let overrideTag: NormalizedOperationOptions = {};
+  const operationNameSuffix = bodyContentType
+    ? pascal(bodyContentType)
+    : undefined;
+
+  for (const [tag, options] of Object.entries(output.override.tags)) {
+    if (tags.includes(tag) && options) {
+      overrideTag = mergeDeep(overrideTag, options);
+    }
+  }
 
   const override = mergeDeep(
     mergeDeep(output.override, overrideTag),
-    overrideOperation,
+    overrideOperation ?? {},
   );
 
   const overrideOperationName =
     overrideOperation?.operationName ?? output.override.operationName;
-  const operationName = overrideOperationName
+  const baseOperationName = overrideOperationName
     ? overrideOperationName(operation, route, verb)
     : sanitize(camel(operationId), { es5keyword: true });
+
+  const operationName = operationNameSuffix
+    ? sanitize(`${baseOperationName}With${operationNameSuffix}`, {
+        es5keyword: true,
+      })
+    : baseOperationName;
 
   const response = getResponse({
     responses,
     operationName,
     context,
     contentType: override.contentType,
+    preferredContentType: bodyContentType,
   });
+
+  const bodyContentTypeOverride = bodyContentType
+    ? { include: [bodyContentType] }
+    : override.contentType;
 
   const body = getBody({
     requestBody: requestBody!,
     operationName,
     context,
-    contentType: override.contentType,
+    contentType: bodyContentTypeOverride,
   });
 
   const parameters = getParameters({
@@ -120,7 +162,7 @@ export async function generateVerbOptions({
   const params = getParams({
     route,
     pathParams: parameters.path,
-    operationId: operationId!,
+    operationId,
     context,
     output,
   });
@@ -237,10 +279,110 @@ export function generateVerbsOptions({
   pathRoute,
   context,
 }: GenerateVerbsOptionsParams): Promise<GeneratorVerbsOptions> {
+  const splitRequestBodyByContentType =
+    shouldSplitRequestBodyByContentType(output);
   return asyncReduce(
     _filteredVerbs(verbs, input.filters),
     async (acc, [verb, operation]: [string, OpenApiOperationObject]) => {
       if (isVerb(verb)) {
+        const requestBody = operation.requestBody;
+        if (requestBody && splitRequestBodyByContentType) {
+          const operationId = getOperationId(operation, route, verb);
+          const overrideOperation = output.override.operations[operationId];
+          const operationTags = normalizeTags(operation.tags);
+          let overrideTag: NormalizedOperationOptions = {};
+
+          for (const [tag, options] of Object.entries(output.override.tags)) {
+            if (operationTags.includes(tag) && options) {
+              overrideTag = mergeDeep(overrideTag, options);
+            }
+          }
+
+          const override = mergeDeep(
+            mergeDeep(output.override, overrideTag),
+            overrideOperation ?? {},
+          );
+
+          const overrideOperationName =
+            overrideOperation?.operationName ?? output.override.operationName;
+          const baseOperationName = overrideOperationName
+            ? overrideOperationName(operation, route, verb)
+            : sanitize(camel(operationId), { es5keyword: true });
+
+          const allBodyTypes = getResReqTypes(
+            [
+              [
+                context.output.override.components.requestBodies.suffix,
+                requestBody,
+              ],
+            ],
+            baseOperationName,
+            context,
+            'unknown',
+            (type) => `${type.contentType}:${type.value}`,
+          );
+
+          const filteredBodyTypes = override.contentType
+            ? allBodyTypes.filter((type) => {
+                let include = true;
+                let exclude = false;
+
+                if (override.contentType?.include) {
+                  include = override.contentType.include.includes(
+                    type.contentType,
+                  );
+                }
+
+                if (override.contentType?.exclude) {
+                  exclude = override.contentType.exclude.includes(
+                    type.contentType,
+                  );
+                }
+
+                return include && !exclude;
+              })
+            : [...allBodyTypes];
+
+          const bodyContentTypes: string[] = [
+            ...new Set(
+              filteredBodyTypes.map((type) => type.contentType).filter(Boolean),
+            ),
+          ];
+
+          if (bodyContentTypes.length > 1) {
+            const verbOptions = await Promise.all(
+              bodyContentTypes.map((contentType) =>
+                generateVerbOptions({
+                  verb,
+                  output,
+                  verbParameters: verbs.parameters,
+                  route,
+                  pathRoute,
+                  operation,
+                  context,
+                  bodyContentType: contentType,
+                }),
+              ),
+            );
+
+            acc.push(...verbOptions);
+            return acc;
+          }
+
+          const verbOptions = await generateVerbOptions({
+            verb,
+            output,
+            verbParameters: verbs.parameters,
+            route,
+            pathRoute,
+            operation,
+            context,
+          });
+
+          acc.push(verbOptions);
+          return acc;
+        }
+
         const verbOptions = await generateVerbOptions({
           verb,
           output,
@@ -268,20 +410,24 @@ export function _filteredVerbs(
     return Object.entries(verbs);
   }
 
-  const filterTags = filters.tags || [];
+  const filterTags = filters.tags;
   const filterMode = filters.mode ?? 'include';
 
-  return Object.entries(verbs).filter(
-    ([, operation]: [string, OpenApiOperationObject]) => {
-      const operationTags = operation.tags ?? [];
+  const entries = Object.entries(verbs) as Array<[string, unknown]>;
 
-      const isMatch = operationTags.some((tag) =>
-        filterTags.some((filterTag) =>
-          filterTag instanceof RegExp ? filterTag.test(tag) : filterTag === tag,
-        ),
-      );
+  return entries.filter(([, operation]) => {
+    const operationTags = normalizeTags(
+      typeof operation === 'object' && operation !== null
+        ? (operation as { tags?: unknown }).tags
+        : undefined,
+    );
 
-      return filterMode === 'exclude' ? !isMatch : isMatch;
-    },
-  );
+    const isMatch = operationTags.some((tag) =>
+      filterTags.some((filterTag) =>
+        filterTag instanceof RegExp ? filterTag.test(tag) : filterTag === tag,
+      ),
+    );
+
+    return filterMode === 'exclude' ? !isMatch : isMatch;
+  });
 }

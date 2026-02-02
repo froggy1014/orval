@@ -32,6 +32,13 @@ import zod from '@orval/zod';
 
 const DEFAULT_CLIENT = OutputClient.AXIOS;
 
+const shouldKeyOperationsByOperationName = (
+  output: NormalizedOutputOptions,
+) =>
+  output.client === OutputClient.AXIOS ||
+  output.client === OutputClient.AXIOS_FUNCTIONS ||
+  output.client === OutputClient.FETCH;
+
 const getGeneratorClient = (
   outputClient: OutputClient | OutputClientFunc,
   output: NormalizedOutputOptions,
@@ -243,6 +250,9 @@ export const generateOperations = (
   options: GeneratorOptions,
   output: NormalizedOutputOptions,
 ): Promise<GeneratorOperations> => {
+  const keyOperationsByOperationName = shouldKeyOperationsByOperationName(
+    output,
+  );
   return asyncReduce(
     verbsOptions,
     async (acc, verbOption) => {
@@ -263,7 +273,11 @@ export const generateOperations = (
 
       const generatedMock = generateMock(verbOption, options);
 
-      acc[verbOption.operationId] = {
+      const operationKey = keyOperationsByOperationName
+        ? verbOption.operationName
+        : verbOption.operationId;
+
+      acc[operationKey] = {
         implementation: verbOption.doc + client.implementation,
         imports: client.imports,
         implementationMock: generatedMock.implementation,
