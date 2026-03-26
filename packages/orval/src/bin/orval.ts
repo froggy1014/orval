@@ -14,6 +14,7 @@ import {
   SupportedFormatter,
 } from '@orval/core';
 
+import type { FSWatcher } from 'chokidar';
 import pkg from '../../package.json';
 import { generateSpec } from '../generate-spec';
 import { findConfigFile, loadConfigFile } from '../utils/config';
@@ -103,7 +104,7 @@ cli
       });
 
       if (options.watch) {
-        await startWatcher(
+        const watcher = await startWatcher(
           options.watch,
           async () => {
             try {
@@ -115,6 +116,16 @@ cli
           },
           normalizedOptions.input.target as string,
         );
+
+        if (watcher) {
+          const watchers: FSWatcher[] = [watcher];
+          const shutdown = async () => {
+            await Promise.all(watchers.map((w) => w.close()));
+            process.exit(0);
+          };
+          process.once('SIGINT', shutdown);
+          process.once('SIGTERM', shutdown);
+        }
       } else {
         try {
           await generateSpec(process.cwd(), normalizedOptions);
@@ -149,6 +160,8 @@ cli
       );
 
       let hasErrors = false;
+      const watchers: FSWatcher[] = [];
+
       for (const [projectName, config] of configs) {
         const normalizedOptions = await normalizeOptions(
           config,
@@ -168,7 +181,7 @@ cli
             ? normalizedOptions.input.target
             : undefined;
 
-          await startWatcher(
+          const watcher = await startWatcher(
             options.watch,
             async () => {
               try {
@@ -179,7 +192,20 @@ cli
             },
             fileToWatch,
           );
+
+          if (watcher) {
+            watchers.push(watcher);
+          }
         }
+      }
+
+      if (watchers.length > 0) {
+        const shutdown = async () => {
+          await Promise.all(watchers.map((w) => w.close()));
+          process.exit(0);
+        };
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
       }
 
       if (hasErrors) {

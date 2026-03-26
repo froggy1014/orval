@@ -1,3 +1,4 @@
+import type { FSWatcher } from 'chokidar';
 import { isBoolean, log, logError } from '@orval/core';
 
 /**
@@ -11,16 +12,16 @@ import { isBoolean, log, logError } from '@orval/core';
  * @param watchOptions - false to disable watching, or a path/paths to watch
  * @param watchFn - async callback executed on change events
  * @param defaultTarget - path(s) to watch when `watchOptions` is `true` (default: '.')
- * @returns Resolves once the watcher has been started (or immediately if disabled)
+ * @returns The FSWatcher instance if watching is enabled, or undefined if disabled
  *
  * @example
- * await startWatcher(true, async () => { await buildProject(); }, 'src');
+ * const watcher = await startWatcher(true, async () => { await buildProject(); }, 'src');
  */
 export async function startWatcher(
   watchOptions: boolean | string | string[],
   watchFn: () => Promise<void>,
   defaultTarget: string | string[] = '.',
-) {
+): Promise<FSWatcher | undefined> {
   if (!watchOptions) return;
   const { watch } = await import('chokidar');
 
@@ -47,4 +48,6 @@ export async function startWatcher(
       logError(error);
     });
   });
+
+  return watcher;
 }
