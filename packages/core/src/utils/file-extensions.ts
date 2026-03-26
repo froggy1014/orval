@@ -9,7 +9,6 @@ export function getMockFileExtensionByTypeName(
   }
   switch (mock.type) {
     default: {
-      // case 'msw':
       return 'msw';
     }
   }
